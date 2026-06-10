@@ -4,6 +4,8 @@ import re
 import os
 import time
 
+from ai.classifier import predict as predict_category
+
 try:
     nlp = spacy.load("en_core_web_sm")
 except OSError:
@@ -96,7 +98,10 @@ def process_pdf(pdf_bytes: bytes) -> dict:
             except ValueError:
                 pass
 
-    # 5. Confidence scoring & risk level
+    # 5. ML contract-type prediction (offline TF-IDF + LogisticRegression model)
+    prediction = predict_category(raw_text)
+
+    # 6. Confidence scoring & risk level
     confidence_score = _calculate_confidence(extracted_data, word_count)
     risk_level = _assess_risk(extracted_data, confidence_score)
 
@@ -109,7 +114,7 @@ def process_pdf(pdf_bytes: bytes) -> dict:
     if not extracted_data["dates"]:
         flags.append("No dates found — contract timeline unclear.")
 
-    # 6. PII redaction
+    # 7. PII redaction
     redacted_text = raw_text
     for party in extracted_data["parties"]:
         redacted_text = redacted_text.replace(party, "[PARTY_REDACTED]")
@@ -134,6 +139,7 @@ def process_pdf(pdf_bytes: bytes) -> dict:
         "flags": flags,
         "confidence_score": confidence_score,
         "risk_level": risk_level,
+        "prediction": prediction,
         "stats": {
             "word_count": word_count,
             "sentence_count": sentence_count,

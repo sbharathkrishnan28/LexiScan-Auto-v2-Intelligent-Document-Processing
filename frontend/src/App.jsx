@@ -1,6 +1,24 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
+import Landing from './Landing'
+import Auth from './Auth'
 
-const API = 'http://localhost:8000/api/v1'
+const API = 'http://localhost:8001/api/v1'
+
+// ─── Theme Toggle ─────────────────────────────────────────────────────────────
+function ThemeToggle({ theme, onToggle }) {
+  const isDark = theme === 'dark'
+  return (
+    <button
+      className="theme-toggle"
+      onClick={onToggle}
+      title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+      aria-label="Toggle color theme"
+    >
+      <span className="tt-icon">{isDark ? '🌙' : '☀️'}</span>
+      <span className="tt-label">{isDark ? 'Dark' : 'Light'}</span>
+    </button>
+  )
+}
 
 // ─── Toast ───────────────────────────────────────────────────────────────────
 function Toast({ toasts, remove }) {
@@ -41,6 +59,33 @@ function RiskBadge({ level }) {
   )
 }
 
+// ─── Prediction Panel (ML contract-type classifier) ──────────────────────────
+function PredictionPanel({ prediction }) {
+  if (!prediction || !prediction.ranked?.length) return null
+  return (
+    <div className="glass predict-panel">
+      <h3 className="panel-title">🤖 AI Contract-Type Prediction</h3>
+      <div className="predict-head">
+        <span className="predict-type">{prediction.category}</span>
+        <span className="predict-conf">{prediction.confidence}% confident</span>
+      </div>
+      <p className="predict-label">{prediction.category_label}</p>
+      <div className="predict-bars">
+        {prediction.ranked.map(r => (
+          <div key={r.category} className="predict-row">
+            <span className="predict-row-label">{r.category}</span>
+            <div className="predict-track">
+              <div className="predict-fill" style={{ width: `${r.probability}%` }} />
+            </div>
+            <span className="predict-row-val">{r.probability}%</span>
+          </div>
+        ))}
+      </div>
+      <p className="predict-note">Offline TF-IDF + Logistic Regression model · no external API</p>
+    </div>
+  )
+}
+
 // ─── Processing Steps ─────────────────────────────────────────────────────────
 function ProcessingSteps({ step }) {
   const steps = [
@@ -69,6 +114,13 @@ function EntityTag({ text, type }) {
 
 // ─── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
+  const [token, setToken] = useState(() => localStorage.getItem('lexiscan_token') || '')
+  const [user, setUser] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('lexiscan_user') || 'null') } catch { return null }
+  })
+  const [gate, setGate] = useState('landing') // 'landing' | 'auth' (only used when logged out)
+  const [theme, setTheme] = useState(() => localStorage.getItem('lexiscan_theme') || 'dark')
+
   const [view, setView] = useState('upload')
   const [loading, setLoading] = useState(false)
   const [loadStep, setLoadStep] = useState(0)
@@ -89,29 +141,72 @@ export default function App() {
 
   const removeToast = useCallback(id => setToasts(prev => prev.filter(t => t.id !== id)), [])
 
+  // Apply theme to <html> and persist it.
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme)
+    localStorage.setItem('lexiscan_theme', theme)
+  }, [theme])
+
+  const toggleTheme = useCallback(() => setTheme(t => (t === 'dark' ? 'light' : 'dark')), [])
+
+  const logout = useCallback(() => {
+    localStorage.removeItem('lexiscan_token')
+    localStorage.removeItem('lexiscan_user')
+    setToken('')
+    setUser(null)
+    setGate('landing')
+    setView('upload')
+    setResult(null)
+    setContracts([])
+    setStatsData(null)
+  }, [])
+
+  const onAuthed = useCallback((tok, usr) => {
+    localStorage.setItem('lexiscan_token', tok)
+    localStorage.setItem('lexiscan_user', JSON.stringify(usr))
+    setToken(tok)
+    setUser(usr)
+    setView('upload')
+  }, [])
+
+  // Authenticated fetch — injects the bearer token and logs out on 401.
+  const authedFetch = useCallback(async (path, opts = {}) => {
+    const res = await fetch(`${API}${path}`, {
+      ...opts,
+      headers: { ...(opts.headers || {}), Authorization: `Bearer ${token}` },
+    })
+    if (res.status === 401) {
+      logout()
+      addToast('Session expired — please log in again.', 'error')
+      throw new Error('Unauthorized')
+    }
+    return res
+  }, [token, logout, addToast])
+
   const fetchHistory = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/contracts`)
+      const res = await authedFetch('/contracts')
       const data = await res.json()
       setContracts(data.contracts || [])
-    } catch {
-      addToast('Could not load history — is the backend running?', 'error')
+    } catch (e) {
+      if (e.message !== 'Unauthorized') addToast('Could not load history — is the backend running?', 'error')
     }
-  }, [addToast])
+  }, [authedFetch, addToast])
 
   const fetchStats = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/stats`)
+      const res = await authedFetch('/stats')
       setStatsData(await res.json())
-    } catch {
-      addToast('Could not load stats.', 'error')
+    } catch (e) {
+      if (e.message !== 'Unauthorized') addToast('Could not load stats.', 'error')
     }
-  }, [addToast])
+  }, [authedFetch, addToast])
 
   useEffect(() => {
+    if (!token) return
     if (view === 'history') fetchHistory()
     if (view === 'stats') fetchStats()
-  }, [view, fetchHistory, fetchStats])
+  }, [view, token, fetchHistory, fetchStats])
 
   const processFile = async file => {
     if (!file?.name?.toLowerCase().endsWith('.pdf')) {
@@ -130,7 +225,7 @@ export default function App() {
     fd.append('file', file)
 
     try {
-      const res = await fetch(`${API}/extract`, { method: 'POST', body: fd })
+      const res = await authedFetch('/extract', { method: 'POST', body: fd })
       if (!res.ok) {
         const err = await res.json()
         throw new Error(err.detail || 'Processing failed.')
@@ -174,11 +269,11 @@ export default function App() {
 
   const deleteContract = async id => {
     try {
-      await fetch(`${API}/contracts/${id}`, { method: 'DELETE' })
+      await authedFetch(`/contracts/${id}`, { method: 'DELETE' })
       setContracts(prev => prev.filter(c => c.id !== id))
       addToast('Contract removed from history.', 'info')
-    } catch {
-      addToast('Failed to delete contract.', 'error')
+    } catch (e) {
+      if (e.message !== 'Unauthorized') addToast('Failed to delete contract.', 'error')
     }
   }
 
@@ -200,6 +295,33 @@ export default function App() {
     { id: 'stats',   label: '📈 Stats' },
   ]
 
+  // ── Logged-out: landing / auth ─────────────────────────────────────────────
+  if (!token) {
+    return (
+      <>
+        <Toast toasts={toasts} remove={removeToast} />
+        {gate === 'auth' ? (
+          <Auth
+            api={API}
+            addToast={addToast}
+            onAuthed={onAuthed}
+            onBack={() => setGate('landing')}
+            theme={theme}
+            onToggleTheme={toggleTheme}
+          />
+        ) : (
+          <Landing
+            onGetStarted={() => setGate('auth')}
+            onLogin={() => setGate('auth')}
+            theme={theme}
+            onToggleTheme={toggleTheme}
+          />
+        )}
+      </>
+    )
+  }
+
+  // ── Logged-in: dashboard ───────────────────────────────────────────────────
   return (
     <div className="app-root">
       <Toast toasts={toasts} remove={removeToast} />
@@ -223,6 +345,14 @@ export default function App() {
               {t.label}
             </button>
           ))}
+          <div className="user-menu">
+            <ThemeToggle theme={theme} onToggle={toggleTheme} />
+            <span className="user-chip" title={user?.email}>
+              <span className="user-avatar">{(user?.name || user?.email || '?')[0].toUpperCase()}</span>
+              <span className="user-name">{user?.name}</span>
+            </span>
+            <button className="btn btn-secondary btn-sm" onClick={logout}>Log out</button>
+          </div>
         </nav>
       </header>
 
@@ -323,10 +453,17 @@ export default function App() {
               </div>
               <div className="meta-divider" />
               <div className="meta-kv">
+                <span className="meta-label">Predicted Type</span>
+                <span className="meta-value meta-type">{result.prediction?.category || '—'}</span>
+              </div>
+              <div className="meta-divider" />
+              <div className="meta-kv">
                 <span className="meta-label">Pages</span>
                 <span className="meta-value">{result.stats.page_count}</span>
               </div>
             </div>
+
+            <PredictionPanel prediction={result.prediction} />
 
             <div className="results-grid">
               {/* Entities panel */}
@@ -385,7 +522,7 @@ export default function App() {
                 <table className="data-table">
                   <thead>
                     <tr>
-                      <th>#</th><th>Filename</th><th>Parties</th><th>Max Amount</th>
+                      <th>#</th><th>Filename</th><th>Type</th><th>Parties</th><th>Max Amount</th>
                       <th>Confidence</th><th>Risk</th><th>Words</th><th>Date</th><th></th>
                     </tr>
                   </thead>
@@ -394,6 +531,11 @@ export default function App() {
                       <tr key={c.id}>
                         <td className="td-muted">#{c.id}</td>
                         <td className="td-name">{c.filename}</td>
+                        <td>
+                          {c.predicted_type
+                            ? <span className="type-chip">{c.predicted_type}</span>
+                            : <span className="td-muted">—</span>}
+                        </td>
                         <td>
                           {c.parties.slice(0, 2).join(', ')}
                           {c.parties.length > 2 && <span className="td-more">+{c.parties.length - 2}</span>}
@@ -469,6 +611,27 @@ export default function App() {
                     )
                   })}
                 </div>
+
+                {statsData.type_breakdown?.length > 0 && (
+                  <div className="glass risk-chart" style={{ marginTop: '1.5rem' }}>
+                    <h3 className="panel-title">🤖 Predicted Contract Types</h3>
+                    {statsData.type_breakdown.map((t, i) => {
+                      const palette = ['#818cf8', '#c084fc', '#38bdf8', '#4ade80', '#fbbf24', '#fb923c']
+                      const pct = statsData.total_contracts
+                        ? Math.round((t.count / statsData.total_contracts) * 100)
+                        : 0
+                      return (
+                        <div key={t.type} className="risk-row">
+                          <span className="risk-label" style={{ width: 92 }}>{t.type}</span>
+                          <div className="risk-track">
+                            <div className="risk-fill" style={{ width: `${pct}%`, background: palette[i % palette.length] }} />
+                          </div>
+                          <span className="risk-count">{t.count}</span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
               </>
             )}
           </div>
