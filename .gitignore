@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+
+# Local databases (created at runtime)
+*.db
+
+# Cached ML model (regenerated on first import of ai/classifier.py)
+ai/contract_clf.joblib
+
+# Generated report (regenerate with: python generate_report.py)
+WEEKLY_REPORT.pdf
+
+# Env
+.env
